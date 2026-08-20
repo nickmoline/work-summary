@@ -1,0 +1,9 @@
+node_modules
+.env
+.credentials/
+state.json
+launchd-out.log
+launchd-err.log
+com.user.work-summary.plist
+context.md
+summaries/

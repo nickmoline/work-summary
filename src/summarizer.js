@@ -1,0 +1,294 @@
+import { GoogleGenerativeAI } from '@google/generative-ai';
+
+/**
+ * Synthesizes activity data into a markdown summary using the Gemini API.
+ * @param {Array<Object>} serviceResults Active collectors' data
+ * @param {string} sinceDate Lookback start time
+ * @param {string} nowDate Current run time
+ * @param {string} apiKey Gemini API Key
+ * @param {string} userName User's full name
+ * @param {string} [modelName] Gemini model to use (defaults to gemini-2.5-flash)
+ * @returns {Promise<string>} Markdown stand-up summary
+ */
+export async function generateSummary(serviceResults, sinceDate, nowDate, apiKey, userName, modelName = process.env.GEMINI_MODEL || 'gemini-2.5-flash', customContext = null, recentSummaries = []) {
+  if (!apiKey) {
+    throw new Error('Gemini API key is not configured. Please set GEMINI_API_KEY.');
+  }
+
+  // Format the collected data for the LLM
+  let formattedData = '';
+
+  for (const result of serviceResults) {
+    if (!result.data || (Array.isArray(result.data) && result.data.length === 0)) {
+      continue;
+    }
+
+    if (result.data.error) {
+      formattedData += `### ${result.displayName} (Error fetching data)\n- ${result.data.error}\n\n`;
+      continue;
+    }
+
+    formattedData += `### ${result.displayName} Activity:\n`;
+
+    if (result.name === 'calendar') {
+      result.data.forEach(event => {
+        const eventDate = new Date(event.start).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
+        formattedData += `- **Event**: ${event.summary}\n`;
+        formattedData += `  - **Time**: ${eventDate} (${event.start} to ${event.end})\n`;
+        if (event.description) {
+          formattedData += `  - **Details**: ${event.description.replace(/\n/g, ' ')}\n`;
+        }
+      });
+    } else if (result.name === 'fathom') {
+      result.data.forEach(meeting => {
+        const meetingDate = new Date(meeting.startTime).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
+        formattedData += `- **Meeting**: ${meeting.title}\n`;
+        formattedData += `  - **Time**: ${meetingDate} (${meeting.startTime})\n`;
+        if (meeting.summary) {
+          formattedData += `  - **Meeting Summary**: ${meeting.summary}\n`;
+        }
+        if (meeting.url) {
+          formattedData += `  - **Recording URL**: ${meeting.url}\n`;
+        }
+      });
+    } else if (result.name === 'linear') {
+      result.data.forEach(issue => {
+        const issueDate = new Date(issue.updatedAt).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
+        const isUrgent = (issue.priorityLabel || '').toLowerCase() === 'urgent';
+        const priorityStr = issue.priorityLabel ? ` (Priority: ${issue.priorityLabel})` : ' (Priority: None)';
+        formattedData += `- **Issue**: [${issue.identifier}] ${issue.title} (Status: ${issue.state}${priorityStr})\n`;
+        if (issue.url) {
+          formattedData += `  - **URL**: ${issue.url}\n`;
+        }
+        formattedData += `  - **Linear Priority**: ${issue.priorityLabel || 'No priority'}\n`;
+        formattedData += `  - **Is Marked Urgent in Linear?**: ${isUrgent ? 'YES' : 'NO'}\n`;
+        formattedData += `  - **Last Updated**: ${issueDate}\n`;
+        formattedData += `  - **Activities**: ${issue.activities.join(', ')}\n`;
+        if (issue.comments && issue.comments.length > 0) {
+          formattedData += `  - **Your Comments**:\n`;
+          issue.comments.forEach(comment => {
+            formattedData += `    * "${comment.body.replace(/\n/g, ' ')}"\n`;
+          });
+        }
+      });
+    } else if (result.name === 'github') {
+      result.data.forEach(pr => {
+        const prDate = new Date(pr.updatedAt).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
+        const relation = pr.isAuthor ? 'Authored by me' : `Authored by ${pr.author} (I reviewed/commented)`;
+        const repoShort = pr.repoShortName || (pr.repository ? pr.repository.split('/')[1] : 'repo');
+        const prNumStr = pr.number ? `PR#${pr.number}` : '';
+        formattedData += `- **Pull Request**: [${repoShort} ${prNumStr}]("${pr.title}") in ${pr.repository} (${relation})\n`;
+        formattedData += `  - **Repository Short Name**: ${repoShort}\n`;
+        formattedData += `  - **PR Number**: ${pr.number || 'unknown'}\n`;
+        formattedData += `  - **Title**: "${pr.title}"\n`;
+        formattedData += `  - **Status**: ${pr.state}\n`;
+        formattedData += `  - **URL**: ${pr.url}\n`;
+        formattedData += `  - **Last Updated**: ${prDate}\n`;
+      });
+    } else if (result.name === 'slack') {
+      result.data.forEach(msg => {
+        const msgDate = new Date(msg.timestamp).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+        formattedData += `- **Slack Message in #${msg.channelName}** (${msgDate}):\n`;
+        formattedData += `  - **Your Message**: "${msg.text.replace(/\n/g, ' ')}"\n`;
+        if (msg.permalink) {
+          formattedData += `  - **Permalink**: ${msg.permalink}\n`;
+        }
+        if (msg.parentMessage) {
+          formattedData += `  - **Thread Parent Request**: "${msg.parentMessage.text.replace(/\n/g, ' ')}" (by user ${msg.parentMessage.user})\n`;
+        }
+        if (msg.precedingMessages && msg.precedingMessages.length > 0) {
+          formattedData += `  - **Preceding Conversation in Channel/DM**:\n`;
+          msg.precedingMessages.forEach(prev => {
+            formattedData += `    * (by user ${prev.user}): "${prev.text.replace(/\n/g, ' ')}"\n`;
+          });
+        }
+      });
+    } else {
+      // Fallback for custom added services
+      formattedData += JSON.stringify(result.data, null, 2) + '\n';
+    }
+
+    formattedData += '\n';
+  }
+
+  if (!formattedData.trim()) {
+    return `## Stand-up Work Summary (${new Date(nowDate).toLocaleDateString()})\n\nNo activity was detected across Google Calendar, Fathom.video, Linear, GitHub, or Slack within this timeframe.`;
+  }
+
+  const formatOptions = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
+  const friendlySince = new Date(sinceDate).toLocaleDateString('en-US', formatOptions);
+  const friendlyNow = new Date(nowDate).toLocaleDateString('en-US', formatOptions);
+
+  const sinceDateObj = new Date(sinceDate);
+  const nowDateObj = new Date(nowDate);
+
+  const sinceLocalDateStr = `${sinceDateObj.getFullYear()}-${String(sinceDateObj.getMonth() + 1).padStart(2, '0')}-${String(sinceDateObj.getDate()).padStart(2, '0')}`;
+  const nowLocalDateStr = `${nowDateObj.getFullYear()}-${String(nowDateObj.getMonth() + 1).padStart(2, '0')}-${String(nowDateObj.getDate()).padStart(2, '0')}`;
+
+  const yesterdayObj = new Date(nowDateObj);
+  yesterdayObj.setDate(yesterdayObj.getDate() - 1);
+  const yesterdayLocalDateStr = `${yesterdayObj.getFullYear()}-${String(yesterdayObj.getMonth() + 1).padStart(2, '0')}-${String(yesterdayObj.getDate()).padStart(2, '0')}`;
+  const yesterdayDayName = yesterdayObj.toLocaleDateString('en-US', { weekday: 'long' });
+
+  const isMultipleDays = sinceLocalDateStr !== nowLocalDateStr;
+  const eventDates = getActiveEventDates(serviceResults);
+
+  let timeframeHint = '';
+
+  if (!isMultipleDays) {
+    timeframeHint = 'today';
+  } else if (sinceLocalDateStr === yesterdayLocalDateStr || (eventDates.length > 0 && eventDates.every(d => d === yesterdayLocalDateStr))) {
+    timeframeHint = `yesterday (${yesterdayDayName})`;
+  } else if (eventDates.length === 1) {
+    const singleDateStr = eventDates[0];
+    if (singleDateStr === nowLocalDateStr) {
+      timeframeHint = 'today';
+    } else if (singleDateStr === yesterdayLocalDateStr) {
+      timeframeHint = `yesterday (${yesterdayDayName})`;
+    } else {
+      const singleDayName = new Date(singleDateStr + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'long' });
+      timeframeHint = `on ${singleDayName}`;
+    }
+  } else if (eventDates.length > 1) {
+    const earliestEventStr = eventDates[0];
+    const latestEventStr = eventDates[eventDates.length - 1];
+
+    if (earliestEventStr === latestEventStr) {
+      if (earliestEventStr === yesterdayLocalDateStr) {
+        timeframeHint = `yesterday (${yesterdayDayName})`;
+      } else {
+        const singleDayName = new Date(earliestEventStr + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'long' });
+        timeframeHint = `on ${singleDayName}`;
+      }
+    } else {
+      const earliestDayName = new Date(earliestEventStr + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'long' });
+      timeframeHint = `since ${earliestDayName}`;
+    }
+  } else {
+    const sinceDayName = sinceDateObj.toLocaleDateString('en-US', { weekday: 'long' });
+    timeframeHint = `since ${sinceDayName}`;
+  }
+
+  let systemInstruction = `You are a professional software engineering assistant. Your task is to compile a stand-up work summary based on activity logs from various integrations (GitHub, Linear, Google Calendar, Fathom.video, Slack).
+
+The user wants a summary of what they worked on since the previous run.
+Output format:
+- A title with the date.
+- A few short, grounded paragraphs summarizing the focus of the work, highlights, and main accomplishments. Include key work requests or commitments acknowledged in Slack or meetings alongside GitHub and Linear progress.
+- Bullet points grouped logically by project, feature, or theme (rather than just listing by source) detailing specific updates (e.g. PRs reviewed, meetings attended, tickets updated, Slack thread responses, comments left).
+- Use an active first-person voice ("I worked on...", "Reviewed...", "Discussed...", "Acknowledged...") ONLY for actions taken by the user (${userName}).
+- The user's name is ${userName}. When synthesizing Fathom.video meeting summaries or Slack discussions, pay close attention to who is speaking or who did the work. Only attribute tasks, resolutions, or actions to ${userName} if the logs specifically show ${userName} did them or agreed to do them. If a conversation describes work done by others or general team decisions, summarize it as a collaborative discussion (e.g. 'Participated in a team alignment meeting where X was discussed', 'Discussed X with the team in Slack') rather than attributing other people's actions to ${userName}.
+- Describe the timeframe of the summary naturally and accurately. Do not refer to the timeframe as a "sprint", "period", "reporting period", or "sprint/period". It is just a stand-up summary of work done since the last run.
+  - Describe the timeframe of the work in the opening sentence of the summary based on this hint: "${timeframeHint}".
+    - If the hint is "yesterday (${yesterdayDayName})" or refers to the previous day, frame the work as done "Yesterday" or "On ${yesterdayDayName}" (e.g., "Yesterday, my focus was on..." or "On ${yesterdayDayName}, my focus was on..."). Do NOT say "Since ${yesterdayDayName}" or "Since yesterday" when the period is only the previous day.
+    - If the hint is "on Friday", frame the work as done "on Friday" or "this past Friday".
+    - If the hint is "since Friday", frame it as "since Friday" or "this past Friday and over the weekend".
+  - Use specific days of the week or dates rather than corporate jargon.
+- STRICT PRIORITY & SEVERITY RULES:
+  - NEVER call, label, or describe any task, ticket, bug, PR, or work item as "urgent", "critical", "high-priority", or "release blocker" UNLESS its Linear ticket explicitly has Linear Priority set to "Urgent" (\`Is Marked Urgent in Linear?: YES\`).
+  - If a Linear ticket has \`Is Marked Urgent in Linear?: NO\` (e.g., "No priority", "Normal", "Low", "High"), or if there is no Linear ticket, you MUST NOT refer to it as "urgent", "critical", or "release blocker" under any circumstances—even if meeting transcripts or Slack messages use the word "critical" or "blocker". Unless a ticket is marked Urgent in Linear, the team DOES NOT consider it urgent or blocking for a release.
+  - For STY-972 (or any ticket without Urgent priority), describe it strictly as a standard bug (e.g., "an accessibility bug in form dropdowns"), NEVER as "urgent" or "critical".
+  - Avoid hyperbolic adjectives like "critical", "crucial", "urgent", "high-impact", "vital", or "essential blocker" anywhere in the summary. Keep the tone grounded, objective, professional, and understated.
+- Format GitHub Pull Request references strictly by Repository Short Name and PR number as the link text (e.g. \`[ally-app PR#82](https://github.com/Storyllp/ally-app/pull/82)\` or \`[backend PR#588](https://github.com/Storyllp/backend/pull/588)\`), NEVER using the PR title/label as the link anchor text.
+  - If a Linear ticket number (e.g. STY-975) is referenced in the title or description of the PR or associated with the issue, also append a markdown link to the Linear ticket right after the PR link, e.g. \`[ally-app PR#82](https://github.com/Storyllp/ally-app/pull/82) ([STY-975](https://linear.app/story-llp/issue/STY-975/title-slug))\`.
+- Keep it concise, professional, and easy to read during a morning stand-up.
+- Do not mention raw IDs or internal API names unless relevant. Include clickable markdown links to PRs, Linear tickets, or Slack permalinks if provided.
+- At the very end of the output document, after a horizontal rule ("---"), append a dedicated section titled "## Conversation Summary".
+  - This section is for ${userName}'s personal reference to track all conversations, discussions, requests, and acknowledgments across Slack channels/threads, direct messages, and Fathom video meetings.
+  - Group updates logically (e.g., by Slack channel/thread or meeting title).
+  - Detail what was asked by others, what ${userName} acknowledged or committed to do, key decisions made, and any open action items.
+  - Include clickable links to Slack permalinks or Fathom recordings where available.`;
+
+  if (customContext) {
+    systemInstruction += `\n\nBackground Organizational Context & Team Directory:\n${customContext}\nUse this background context to resolve team member roles, manager/colleague relationships, product names, contractors, and acronyms accurately.`;
+  }
+
+  let prompt = `Here is today's date: ${friendlyNow}
+Here is the collected work activity since the last run (from ${friendlySince} to ${friendlyNow}):
+
+${formattedData}`;
+
+  if (recentSummaries && recentSummaries.length > 0) {
+    prompt += `\nRecent Prior Summaries (For Temporal Continuity & Context):\n`;
+    recentSummaries.forEach(s => {
+      prompt += `--- Summary file: ${s.filename} ---\n${s.content}\n\n`;
+    });
+    prompt += `Use the above prior summaries for background continuity so you can connect ongoing tasks or follow-ups seamlessly, but focus your main output on the NEW activity collected in this run.\n`;
+  }
+
+  prompt += `\nGenerate the daily stand-up work summary with the appended Conversation Summary at the end.`;
+
+  // Call the Gemini API with retry logic for transient 503/429 errors
+  const genAI = new GoogleGenerativeAI(apiKey);
+  const model = genAI.getGenerativeModel({
+    model: modelName,
+    systemInstruction: systemInstruction,
+  });
+
+  const maxRetries = 3;
+  let lastError;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const result = await model.generateContent(prompt);
+      return result.response.text();
+    } catch (err) {
+      lastError = err;
+      const isTransient = err.message?.includes('503') || err.message?.includes('429') || err.status === 503 || err.status === 429;
+      if (isTransient && attempt < maxRetries) {
+        const delayMs = attempt * 2000;
+        console.warn(`[!] Gemini API (${modelName}) returned transient error (attempt ${attempt}/${maxRetries}): ${err.message.split('\n')[0]}. Retrying in ${delayMs / 1000}s...`);
+        await new Promise(res => setTimeout(res, delayMs));
+      } else {
+        throw err;
+      }
+    }
+  }
+
+  throw lastError;
+}
+
+/**
+ * Extracts and chronologically sorts the unique local calendar dates (YYYY-MM-DD format) for all events.
+ * @param {Array<Object>} serviceResults Active collectors' data
+ * @returns {Array<string>} Chronologically sorted unique local date strings
+ */
+function getActiveEventDates(serviceResults) {
+  const dates = new Set();
+  
+  const addDate = (dateVal) => {
+    if (!dateVal) return;
+    const d = new Date(dateVal);
+    if (!isNaN(d.getTime())) {
+      const year = d.getFullYear();
+      const month = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      dates.add(`${year}-${month}-${day}`);
+    }
+  };
+
+  for (const result of serviceResults) {
+    if (!result.data || result.data.error) continue;
+
+    if (result.name === 'calendar') {
+      result.data.forEach(e => addDate(e.start));
+    } else if (result.name === 'fathom') {
+      result.data.forEach(m => addDate(m.startTime));
+    } else if (result.name === 'linear') {
+      result.data.forEach(issue => {
+        addDate(issue.updatedAt);
+        (issue.comments || []).forEach(c => addDate(c.createdAt));
+      });
+    } else if (result.name === 'github') {
+      result.data.forEach(pr => addDate(pr.updatedAt));
+    } else if (result.name === 'slack') {
+      result.data.forEach(msg => addDate(msg.timestamp));
+    } else if (Array.isArray(result.data)) {
+      result.data.forEach(item => {
+        addDate(item.updatedAt || item.createdAt || item.date || item.time || item.start || item.timestamp);
+      });
+    }
+  }
+
+  return Array.from(dates).sort();
+}

@@ -1,0 +1,16 @@
+{
+  "name": "work-summary",
+  "version": "1.0.0",
+  "description": "Activity collector and work summary generator using Gemini API",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "setup": "node setup.js"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.21.0",
+    "dotenv": "^16.4.5",
+    "googleapis": "^144.0.0"
+  }
+}
