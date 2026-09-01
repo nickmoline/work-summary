@@ -115,7 +115,12 @@ export function getLastRun(referenceDate = new Date()) {
     try {
       const data = JSON.parse(fs.readFileSync(STATE_FILE_PATH, 'utf-8'));
       if (data.lastRunAt) {
-        return data.lastRunAt;
+        const parsed = new Date(data.lastRunAt);
+        if (!isNaN(parsed.getTime())) {
+          return parsed.toISOString();
+        } else {
+          console.warn(`[!] Warning: state.json contains invalid timestamp ("${data.lastRunAt}"). Using default lookback.`);
+        }
       }
     } catch (err) {
       console.warn('Warning: Failed to parse state.json. Using default lookback.', err);

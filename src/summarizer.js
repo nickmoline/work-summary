@@ -51,9 +51,17 @@ export async function generateSummary(serviceResults, sinceDate, nowDate, apiKey
           formattedData += `  - **Recording URL**: ${meeting.url}\n`;
         }
       });
+    } else if (result.name === 'transcripts') {
+      result.data.forEach(t => {
+        const tDate = new Date(t.startTime).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+        formattedData += `- **Call/Meeting Transcript**: ${t.title} (File: \`${t.filename}\`)\n`;
+        formattedData += `  - **Time**: ${tDate} (${t.startTime})\n`;
+        formattedData += `  - **Transcript Content**:\n\`\`\`\n${t.content}\n\`\`\`\n`;
+      });
     } else if (result.name === 'linear') {
       result.data.forEach(issue => {
         const issueDate = new Date(issue.updatedAt).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
+        const createdDate = issue.createdAt ? new Date(issue.createdAt).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' }) : 'Unknown date';
         const isUrgent = (issue.priorityLabel || '').toLowerCase() === 'urgent';
         const priorityStr = issue.priorityLabel ? ` (Priority: ${issue.priorityLabel})` : ' (Priority: None)';
         formattedData += `- **Issue**: [${issue.identifier}] ${issue.title} (Status: ${issue.state}${priorityStr})\n`;
@@ -62,6 +70,8 @@ export async function generateSummary(serviceResults, sinceDate, nowDate, apiKey
         }
         formattedData += `  - **Linear Priority**: ${issue.priorityLabel || 'No priority'}\n`;
         formattedData += `  - **Is Marked Urgent in Linear?**: ${isUrgent ? 'YES' : 'NO'}\n`;
+        formattedData += `  - **Created At**: ${createdDate} (Created by ${issue.creatorName || 'Unknown'})\n`;
+        formattedData += `  - **Created in this timeframe?**: ${issue.isCreatedInTimeframe ? 'YES (Created by user in this timeframe)' : 'NO (Created previously or by someone else)'}\n`;
         formattedData += `  - **Last Updated**: ${issueDate}\n`;
         formattedData += `  - **Activities**: ${issue.activities.join(', ')}\n`;
         if (issue.comments && issue.comments.length > 0) {
@@ -74,6 +84,8 @@ export async function generateSummary(serviceResults, sinceDate, nowDate, apiKey
     } else if (result.name === 'github') {
       result.data.forEach(pr => {
         const prDate = new Date(pr.updatedAt).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
+        const prCreatedDate = pr.createdAt ? new Date(pr.createdAt).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' }) : 'Unknown date';
+        const isPrCreatedInTimeframe = pr.createdAt ? (new Date(pr.createdAt).getTime() >= new Date(sinceDate).getTime() && new Date(pr.createdAt).getTime() <= new Date(nowDate).getTime()) : false;
         const relation = pr.isAuthor ? 'Authored by me' : `Authored by ${pr.author} (I reviewed/commented)`;
         const repoShort = pr.repoShortName || (pr.repository ? pr.repository.split('/')[1] : 'repo');
         const prNumStr = pr.number ? `PR#${pr.number}` : '';
@@ -83,6 +95,7 @@ export async function generateSummary(serviceResults, sinceDate, nowDate, apiKey
         formattedData += `  - **Title**: "${pr.title}"\n`;
         formattedData += `  - **Status**: ${pr.state}\n`;
         formattedData += `  - **URL**: ${pr.url}\n`;
+        formattedData += `  - **Created At**: ${prCreatedDate} (Opened in this timeframe: ${isPrCreatedInTimeframe ? 'YES' : 'NO'})\n`;
         formattedData += `  - **Last Updated**: ${prDate}\n`;
       });
     } else if (result.name === 'slack') {
@@ -112,7 +125,7 @@ export async function generateSummary(serviceResults, sinceDate, nowDate, apiKey
   }
 
   if (!formattedData.trim()) {
-    return `## Stand-up Work Summary (${new Date(nowDate).toLocaleDateString()})\n\nNo activity was detected across Google Calendar, Fathom.video, Linear, GitHub, or Slack within this timeframe.`;
+    return `## Stand-up Work Summary (${new Date(nowDate).toLocaleDateString()})\n\nNo activity was detected across Google Calendar, Fathom.video, Transcripts, Linear, GitHub, or Slack within this timeframe.`;
   }
 
   const formatOptions = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
@@ -169,35 +182,42 @@ export async function generateSummary(serviceResults, sinceDate, nowDate, apiKey
     timeframeHint = `since ${sinceDayName}`;
   }
 
-  let systemInstruction = `You are a professional software engineering assistant. Your task is to compile a stand-up work summary based on activity logs from various integrations (GitHub, Linear, Google Calendar, Fathom.video, Slack).
+  let systemInstruction = `You are a professional software engineering assistant. Your task is to compile a stand-up work summary based on activity logs from various integrations (GitHub, Linear, Google Calendar, Fathom.video, Slack, Call/Meeting Transcripts).
 
 The user wants a summary of what they worked on since the previous run.
 Output format:
 - A title with the date.
-- A few short, grounded paragraphs summarizing the focus of the work, highlights, and main accomplishments. Include key work requests or commitments acknowledged in Slack or meetings alongside GitHub and Linear progress.
-- Bullet points grouped logically by project, feature, or theme (rather than just listing by source) detailing specific updates (e.g. PRs reviewed, meetings attended, tickets updated, Slack thread responses, comments left).
+- A few short, grounded paragraphs summarizing the focus of the work, highlights, and main accomplishments. Include key work requests or commitments acknowledged in Slack or meetings/calls alongside GitHub and Linear progress.
+- Bullet points grouped logically by project, feature, or theme (rather than just listing by source) detailing specific updates (e.g. PRs reviewed, meetings/calls attended, tickets updated, Slack thread responses, comments left).
 - Use an active first-person voice ("I worked on...", "Reviewed...", "Discussed...", "Acknowledged...") ONLY for actions taken by the user (${userName}).
-- The user's name is ${userName}. When synthesizing Fathom.video meeting summaries or Slack discussions, pay close attention to who is speaking or who did the work. Only attribute tasks, resolutions, or actions to ${userName} if the logs specifically show ${userName} did them or agreed to do them. If a conversation describes work done by others or general team decisions, summarize it as a collaborative discussion (e.g. 'Participated in a team alignment meeting where X was discussed', 'Discussed X with the team in Slack') rather than attributing other people's actions to ${userName}.
+- The user's name is ${userName} (and also referred to as Aster / Aster Moe in context). When synthesizing Fathom.video meeting summaries, arbitrary call transcripts, or Slack discussions, pay close attention to who is speaking or who did the work. In call transcripts, speakers may be named directly (e.g. Aster, Jessica Hubley) or labeled generically ('You', 'The speaker'). Only attribute tasks, resolutions, or actions to ${userName} if the logs specifically show ${userName} did them or agreed to do them. If a conversation describes work done by others or general team decisions, summarize it as a collaborative discussion (e.g. 'Participated in a team alignment meeting where X was discussed', 'Discussed X with Jessica in a phone call', 'Discussed X with the team in Slack') rather than attributing other people's actions to ${userName}.
 - Describe the timeframe of the summary naturally and accurately. Do not refer to the timeframe as a "sprint", "period", "reporting period", or "sprint/period". It is just a stand-up summary of work done since the last run.
   - Describe the timeframe of the work in the opening sentence of the summary based on this hint: "${timeframeHint}".
     - If the hint is "yesterday (${yesterdayDayName})" or refers to the previous day, frame the work as done "Yesterday" or "On ${yesterdayDayName}" (e.g., "Yesterday, my focus was on..." or "On ${yesterdayDayName}, my focus was on..."). Do NOT say "Since ${yesterdayDayName}" or "Since yesterday" when the period is only the previous day.
     - If the hint is "on Friday", frame the work as done "on Friday" or "this past Friday".
     - If the hint is "since Friday", frame it as "since Friday" or "this past Friday and over the weekend".
   - Use specific days of the week or dates rather than corporate jargon.
+- STRICT TICKET & PR CREATION ATTRIBUTION RULES:
+  - ONLY state, list, or imply that ${userName} "created", "opened", "filed", or "authored" a Linear ticket if \`Created in this timeframe?: YES\` is explicitly present for that ticket and ${userName} is the creator.
+  - If a Linear ticket has \`Created in this timeframe?: NO\`, you MUST NEVER describe it as a ticket created by ${userName} in this summary. It was created prior to this timeframe or by someone else. Describe it strictly as worked on, updated, resolved by PR, or commented on (e.g. "Addressed backlog issues [STY-878]...", "Closed PR resolving [STY-880]...", "Updated [STY-881] with implementation plans").
+  - NEVER create a "Created Linear tickets" list or heading containing older backlog tickets (such as STY-878, STY-879, STY-880, STY-881, STY-1146).
+  - ONLY state that ${userName} "opened" or "submitted" a PR if \`Opened in this timeframe: YES\` and it is authored by ${userName}. If it was opened earlier and updated/merged now, describe it as updated, merged, or closed.
 - STRICT PRIORITY & SEVERITY RULES:
   - NEVER call, label, or describe any task, ticket, bug, PR, or work item as "urgent", "critical", "high-priority", or "release blocker" UNLESS its Linear ticket explicitly has Linear Priority set to "Urgent" (\`Is Marked Urgent in Linear?: YES\`).
   - If a Linear ticket has \`Is Marked Urgent in Linear?: NO\` (e.g., "No priority", "Normal", "Low", "High"), or if there is no Linear ticket, you MUST NOT refer to it as "urgent", "critical", or "release blocker" under any circumstances—even if meeting transcripts or Slack messages use the word "critical" or "blocker". Unless a ticket is marked Urgent in Linear, the team DOES NOT consider it urgent or blocking for a release.
   - For STY-972 (or any ticket without Urgent priority), describe it strictly as a standard bug (e.g., "an accessibility bug in form dropdowns"), NEVER as "urgent" or "critical".
   - Avoid hyperbolic adjectives like "critical", "crucial", "urgent", "high-impact", "vital", or "essential blocker" anywhere in the summary. Keep the tone grounded, objective, professional, and understated.
-- Format GitHub Pull Request references strictly by Repository Short Name and PR number as the link text (e.g. \`[ally-app PR#82](https://github.com/Storyllp/ally-app/pull/82)\` or \`[backend PR#588](https://github.com/Storyllp/backend/pull/588)\`), NEVER using the PR title/label as the link anchor text.
-  - If a Linear ticket number (e.g. STY-975) is referenced in the title or description of the PR or associated with the issue, also append a markdown link to the Linear ticket right after the PR link, e.g. \`[ally-app PR#82](https://github.com/Storyllp/ally-app/pull/82) ([STY-975](https://linear.app/story-llp/issue/STY-975/title-slug))\`.
+- STRICT LINK FORMATTING RULES:
+  - Format GitHub Pull Request references strictly by Repository Short Name and PR number as the link text (e.g. [ally-app PR#82](https://github.com/Storyllp/ally-app/pull/82) or [backend PR#588](https://github.com/Storyllp/backend/pull/588)), NEVER using the PR title/label as the link anchor text.
+  - If a Linear ticket number (e.g. STY-975) is referenced in the title or description of the PR or associated with the issue, also append a markdown link to the Linear ticket right after the PR link, e.g. [ally-app PR#82](https://github.com/Storyllp/ally-app/pull/82) ([STY-975](https://linear.app/story-llp/issue/STY-975/title-slug)).
+  - NEVER wrap markdown links in backticks. Do NOT write \`[backend PR#666](url)\` or \`[STY-1218](url)\`. Always output standard unquoted markdown links (e.g. [backend PR#666](https://github.com/Storyllp/backend/pull/666)) so that they render as active clickable hyperlinks in Markdown instead of monospace code.
 - Keep it concise, professional, and easy to read during a morning stand-up.
 - Do not mention raw IDs or internal API names unless relevant. Include clickable markdown links to PRs, Linear tickets, or Slack permalinks if provided.
 - At the very end of the output document, after a horizontal rule ("---"), append a dedicated section titled "## Conversation Summary".
-  - This section is for ${userName}'s personal reference to track all conversations, discussions, requests, and acknowledgments across Slack channels/threads, direct messages, and Fathom video meetings.
-  - Group updates logically (e.g., by Slack channel/thread or meeting title).
+  - This section is for ${userName}'s personal reference to track all conversations, discussions, requests, and acknowledgments across Slack channels/threads, direct messages, Fathom video meetings, and phone call / meeting transcripts.
+  - Group updates logically (e.g., by Slack channel/thread, meeting title, or call transcript).
   - Detail what was asked by others, what ${userName} acknowledged or committed to do, key decisions made, and any open action items.
-  - Include clickable links to Slack permalinks or Fathom recordings where available.`;
+  - Include clickable links to Slack permalinks or Fathom recordings where available, or reference the transcript filename.`;
 
   if (customContext) {
     systemInstruction += `\n\nBackground Organizational Context & Team Directory:\n${customContext}\nUse this background context to resolve team member roles, manager/colleague relationships, product names, contractors, and acronyms accurately.`;
@@ -231,7 +251,8 @@ ${formattedData}`;
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       const result = await model.generateContent(prompt);
-      return result.response.text();
+      const rawText = result.response.text();
+      return sanitizeMarkdownLinks(rawText);
     } catch (err) {
       lastError = err;
       const isTransient = err.message?.includes('503') || err.message?.includes('429') || err.status === 503 || err.status === 429;
@@ -246,6 +267,17 @@ ${formattedData}`;
   }
 
   throw lastError;
+}
+
+/**
+ * Strips backticks that accidentally enclose markdown links (e.g. `[PR#123](url)` -> [PR#123](url))
+ * @param {string} text Raw markdown text
+ * @returns {string} Cleaned markdown text
+ */
+function sanitizeMarkdownLinks(text) {
+  if (!text) return text;
+  // Match `[...](...)` or `[...](...) ([...](...))` enclosed in backticks
+  return text.replace(/`(\[[^`\n]+\]\([^`\n]+\)(?:\s*\(\[[^`\n]+\]\([^`\n]+\)\))*)`/g, '$1');
 }
 
 /**
@@ -274,6 +306,8 @@ function getActiveEventDates(serviceResults) {
       result.data.forEach(e => addDate(e.start));
     } else if (result.name === 'fathom') {
       result.data.forEach(m => addDate(m.startTime));
+    } else if (result.name === 'transcripts') {
+      result.data.forEach(t => addDate(t.startTime));
     } else if (result.name === 'linear') {
       result.data.forEach(issue => {
         addDate(issue.updatedAt);

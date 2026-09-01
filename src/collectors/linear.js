@@ -43,8 +43,10 @@ export default {
                 url
                 priority
                 priorityLabel
+                createdAt
                 updatedAt
                 state { name }
+                creator { id name email }
               }
             }
           }
@@ -65,8 +67,10 @@ export default {
                 url
                 priority
                 priorityLabel
+                createdAt
                 updatedAt
                 state { name }
+                creator { id name email }
               }
             }
           }
@@ -95,7 +99,10 @@ export default {
                 url
                 priority
                 priorityLabel
+                createdAt
+                updatedAt
                 state { name }
+                creator { id name email }
               }
             }
           }
@@ -118,6 +125,9 @@ export default {
       const addIssue = (issue, source) => {
         if (!issue) return;
         if (!issuesMap.has(issue.id)) {
+          const isCreatedByUser = issue.creator ? issue.creator.id === viewerId : false;
+          const isCreatedInTimeframe = inRange(issue.createdAt) && isCreatedByUser;
+
           issuesMap.set(issue.id, {
             id: issue.id,
             identifier: issue.identifier,
@@ -126,27 +136,38 @@ export default {
             priority: issue.priority,
             priorityLabel: issue.priorityLabel || 'No priority',
             state: issue.state?.name || 'Unknown',
+            createdAt: issue.createdAt,
             updatedAt: issue.updatedAt,
+            creatorName: issue.creator?.name || 'Unknown',
+            creatorEmail: issue.creator?.email || '',
+            isCreatedByUser,
+            isCreatedInTimeframe,
             activities: [],
             comments: []
           });
         }
         const record = issuesMap.get(issue.id);
-        if (!record.activities.includes(source)) {
+        if (source && !record.activities.includes(source)) {
           record.activities.push(source);
         }
       };
 
       const assignedIssues = (assignedData?.viewer?.assignedIssues?.nodes || []).filter(i => inRange(i.updatedAt));
-      assignedIssues.forEach(issue => addIssue(issue, 'Assigned to you (updated)'));
+      assignedIssues.forEach(issue => addIssue(issue, 'Assigned to you (updated in this timeframe)'));
 
       const createdIssues = (createdData?.viewer?.createdIssues?.nodes || []).filter(i => inRange(i.updatedAt));
-      createdIssues.forEach(issue => addIssue(issue, 'Created by you (updated)'));
+      createdIssues.forEach(issue => {
+        const isNewlyCreated = inRange(issue.createdAt);
+        const sourceLabel = isNewlyCreated
+          ? 'Created by you in this timeframe'
+          : 'Created by you previously (updated in this timeframe)';
+        addIssue(issue, sourceLabel);
+      });
 
       const comments = (commentsData?.comments?.nodes || []).filter(c => inRange(c.createdAt));
       comments.forEach(comment => {
         if (comment.issue) {
-          addIssue(comment.issue, 'Commented on by you');
+          addIssue(comment.issue, 'Commented on by you in this timeframe');
           const record = issuesMap.get(comment.issue.id);
           record.comments.push({
             body: comment.body,

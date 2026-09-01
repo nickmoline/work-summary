@@ -7,3 +7,5 @@ launchd-err.log
 com.user.work-summary.plist
 context.md
 summaries/
+!arbitrary-transcripts/.gitkeep
+arbitrary-transcripts/*

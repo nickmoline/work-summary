@@ -5,11 +5,12 @@ import { saveAndNotify } from './src/notifier.js';
 // Import collectors
 import calendar from './src/collectors/calendar.js';
 import fathom from './src/collectors/fathom.js';
+import transcripts from './src/collectors/transcripts.js';
 import linear from './src/collectors/linear.js';
 import github from './src/collectors/github.js';
 import slack from './src/collectors/slack.js';
 
-const collectors = [calendar, fathom, linear, github, slack];
+const collectors = [calendar, fathom, transcripts, linear, github, slack];
 
 /**
  * Main execution flow
@@ -57,6 +58,12 @@ async function main() {
   } else {
     sinceDate = getLastRun(untilDate);
     console.log(`[*] Collecting updates since last run: ${sinceDate}`);
+  }
+
+  // Validate sinceDate is a valid date
+  if (!sinceDate || isNaN(new Date(sinceDate).getTime())) {
+    console.warn(`[!] Invalid sinceDate ("${sinceDate}"). Defaulting to 8:00 AM of previous workday.`);
+    sinceDate = getDefaultLastRun(untilDate);
   }
 
   // Ensure sinceDate is strictly before untilDate
